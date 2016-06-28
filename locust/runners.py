@@ -4,6 +4,8 @@ import traceback
 import warnings
 import random
 import logging
+import os
+import sys
 from time import time
 from hashlib import md5
 
@@ -17,6 +19,7 @@ from . import events
 from .stats import global_stats
 
 from .rpc import rpc, Message
+
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ class LocustRunner(object):
         self.hatching_greenlet = None
         self.exceptions = {}
         self.stats = global_stats
+        self.variables = options.variables
         
         # register listener that resets stats when hatching is complete
         def on_hatch_complete(user_count):
@@ -58,6 +62,76 @@ class LocustRunner(object):
     @property
     def user_count(self):
         return len(self.locusts)
+
+    def add_variables(self):
+        """
+        If any variable values have been added on the command line, make them
+        available through self.locust inside the tests.
+        :return:
+        """
+        if self.variables is not None:
+            python_version = sys.version_info[0]
+
+            # Get the path to locust variables, relative to the locust file
+            file_path = None
+            for variable in self.variables:
+                if "locustfile=" in variable:
+                    dir_path = os.path.dirname(variable.split("=")[1])
+                    file_path = os.path.join(dir_path, "locust_variables.py")
+                    self.variables.remove(variable)
+
+            if not os.path.exists(file_path):
+                logger.error("Variable file not found.\nPlease ensure you have "
+                             "a file called 'locust_variables.py' in the same "
+                             "directory as your locust file")
+                sys.exit(1)
+
+            # Loop through all the instances so it's applied to all locust
+            for locust in self.locust_classes:
+                for variable in self.variables:
+                    if "=" in variable:
+                        name, value = variable.split("=")
+                    # If value is not set on the command line read from
+                    # locust_variables.py to get the value returned by the
+                    # function with the same name as the variable passed.
+                    else:
+                        # import the variables file
+                        name = variable
+
+                        if python_version == 2:
+                            import imp
+                            defaults = imp.load_source(name,
+                                                       "locust_variables.py")
+                        else:
+                            import importlib.machinery
+                            defaults = importlib.machinery.SourceFileLoader(
+                                name, file_path).load_module()
+
+                        try:
+                            default_value = getattr(defaults, name)
+                            value = default_value(self)
+
+                        except AttributeError as e:
+                            logger.error(
+                                "{e}\nEnsure the variable '{name}' has a "
+                                "corresponding function in the "
+                                "locust_variables.py file\n".format(
+                                    e=e, name=name))
+                            sys.exit(1)
+
+                        except TypeError as e:
+                            if e == "environment() takes no arguments (1 given)":
+                                logger.error(
+                                    "{e}\nThe function '{f}' inside your "
+                                    "variable file requires the 'locust' "
+                                    "argument".format(e=e, f=name))
+                            else:
+                                logger.error(e)
+                            sys.exit(1)
+
+                    # Set the locust attribute so the variables can be used in
+                    # the format 'self.locust.my_variable' in test cases.
+                    setattr(locust, name, value)
 
     def weight_locusts(self, amount, stop_timeout = None):
         """
@@ -89,6 +163,7 @@ class LocustRunner(object):
         if self.num_requests is not None:
             self.stats.max_requests = self.num_requests
 
+        self.add_variables()
         bucket = self.weight_locusts(spawn_count, stop_timeout)
         spawn_count = len(bucket)
         if self.state == STATE_INIT or self.state == STATE_STOPPED:

@@ -228,6 +228,15 @@ def parse_options():
         help="show program's version number and exit"
     )
 
+    # Custom variables set by the user on the command line.
+    parser.add_option(
+        '--variable',
+        action='append',
+        dest='variables',
+        default=None,
+        help="pass custom variables to use in your tests. Taken in the format foo=bar. If no '=' value is specified the value will be read from the locust_variables.py file in the same directory as your locust file."
+    )
+
     # Finalize
     # Return three-tuple of parser + the output from parse_args (opt obj, args)
     opts, args = parser.parse_args()
@@ -336,7 +345,7 @@ def main():
     # setup logging
     setup_logging(options.loglevel, options.logfile)
     logger = logging.getLogger(__name__)
-    
+
     if options.show_version:
         print("Locust %s" % (version,))
         sys.exit(0)
@@ -345,6 +354,22 @@ def main():
     if not locustfile:
         logger.error("Could not find any locustfile! Ensure file ends in '.py' and see --help for available options.")
         sys.exit(1)
+
+    if options.variables:
+        for variable in options.variables:
+            if "=" in variable:
+                variable = variable.split("=")[0]
+
+            # ensure people can't overwrite standard locust values
+            if variable.lower() in ["host", "client", "weight", "max_wait",
+                                    "min_wait", "stop_timeout", "run",
+                                    "locustfile"]:
+                logger.error("Cannot use the name '{}' for a custom variable\nValue already used by locust.".format(variable))
+                sys.exit(1)
+
+        # Add the locust file to the options, so the locust_variables file can
+        # be located relative to the locust file
+        options.variables.append("locustfile={}".format(locustfile))
 
     docstring, locusts = load_locustfile(locustfile)
 
